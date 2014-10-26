@@ -31,8 +31,10 @@ def address(transceiver, args):
         if message == 'STARTED':
             print ">> a%s%s" % (address, 'ACK')
             transceiver.send(address, 'ACK')
-            dev_addr = address
-        if address == 
+            if dev_addr is None:
+                dev_addr = address
+                print ">> a%s%s" % (address, 'ACK')
+                transceiver.send(address, 'ACK')
         addr_set.set()
 
     transceiver.handler = set_address
