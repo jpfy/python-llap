@@ -73,22 +73,20 @@ class Transceiver(object):
 
     """LLAP serial transceiver."""
 
-    def __init__(self, port, baudrate, handler=None):
+    def __init__(self, port, baudrate, handler=None, debug=False):
         """Create LLAP Transceiver."""
         self.handler = handler
+        self.debug = debug
         self.packet = Packet()
         self.last_char = 0
         """Maximum delay between characters - longer delay means new packet"""
         self.max_delay = 0.05
         self.devices = {}
-        try:
-            self.serial = serial.Serial(port, baudrate)
-        except serial.SerialException:
-            raise
-
+        self.serial = serial.Serial(port, baudrate)
         self.receiver_thread = threading.Thread(target=self.reader)
         self.receiver_thread.daemon = True
         self.receiver_thread.start()
+        time.sleep(0.05)
 
     def reader(self):
         """Reader thread."""
@@ -113,12 +111,14 @@ class Transceiver(object):
 
     def send_packet(self, packet):
         """Send a packet."""
-        # print 'P TX: %s' % packet.data
+        if self.debug:
+            print '>> %s' % packet.data
         self.serial.write(packet.data)
 
     def receive(self, packet):
         """Packet receiver handler."""
-        # print 'P RX: %s' % packet.data
+        if self.debug:
+            print '<< %s' % packet.data
         self.packet.unpad()
         addr = packet.address
         message = packet.message
@@ -135,53 +135,159 @@ class Transceiver(object):
 
     def unregister_device(self, device):
         """Unregister device."""
-        del self.devices[device.address]
+        if device.address in self.devices:
+            del self.devices[device.address]
 
 
 class Device(object):
 
     """LLAP device base class."""
 
-    def __init__(self, addr, transceiver):
+    def __init__(self, addr, transceiver, message=None, debug=False):
         """ Construct basic LLAP device."""
-        self.address = addr
+        self._address = None
         self.transceiver = transceiver
-        self.seen = False
-        self.last_message = ''
-        self.last_message_time = 0
-        self._rec_lock = threading.Event()
+        self.debug = debug
+        self.last_recd_message = ''
+        self.last_sent_time = 0
+        self._started = threading.Event()
+        self._received = threading.Event()
         self._send_delay = 0
+        self.address = addr
+        if message is not None:
+            self.receive(message)
+
+    @property
+    def address(self):
+        """Return device address."""
+        return self._address
+
+    @address.setter
+    def address(self, value):
+        """Set the device address."""
+        self.transceiver.unregister_device(self)
+        self._address = value
         self.transceiver.register_device(self)
 
-    def send(self, message, wait=False, timeout=2):
+    @property
+    def started(self):
+        """Return True if device has STARTED."""
+        return self._started.is_set()
+
+    @started.setter
+    def started(self, value):
+        """Set the started flag."""
+        if value:
+            self._started.set()
+        else:
+            self._started.clear()
+
+    def last_sent_before(self):
+        """Return the time in float seconds since the last message was sent."""
+        return time.time() - self.last_sent_time
+
+    def send(self, message, delay=None, wait=False, response=None,
+             timeout=1, retry=3):
         """Send message to the device, optionally waiting for the response."""
-        print 'D TX: %s' % message
-        delay = self._send_delay - (time.time() - self.last_message_time)
-        if delay > 0:
-            time.sleep(delay)
+        if response is not None:
+            wait = True
+        message_delay = self._send_delay - self.last_sent_before()
+        if message_delay > 0:
+            time.sleep(message_delay)
             self._send_delay = 0
-        self._rec_lock.clear()
-        self.transceiver.send(self.address, message)
-        self.last_message_time = time.time()
-        if wait:
-            if self._rec_lock.wait(timeout):
-                return self.last_message
-            else:
-                return None
+        self._send_delay = delay if delay is not None else 0
+        for i in range(retry):
+            if self.debug:
+                print '>>D %s' % message
+            self._received.clear()
+            self.transceiver.send(self.address, message)
+            self.last_sent_time = time.time()
+            if not wait:
+                return
+            if self._received.wait(timeout):
+                if response is None or \
+                        self.last_recd_message.startswith(response):
+                    return self.last_recd_message
+        return None
 
     def receive(self, message):
         """Receiver callback.
 
         Called from Transceiver for every received packet to the device address
         """
-        print 'D RX: %s' % message
+        if self.debug:
+            print '<<D %s' % message
         self._handle_message(message)
-        self.last_message = message
-        self._rec_lock.set()
+        self.last_recd_message = message
+        self._received.set()
 
     def _handle_message(self, message):
-        """Internal handler to automatically handle standard messages."""
+        """Handler some messages automatically."""
         if message == 'STARTED':
-            self.seen = True
-            self.send('ACK')
-            self._send_delay = LLAP_ACK_DELAY
+            self.started = True
+            self.send('ACK', delay=LLAP_ACK_DELAY)
+
+    def wait_start(self, timeout=None):
+        """Wait for the device to start."""
+        self._started.wait(timeout)
+
+    def apver(self, timeout=1, retry=3):
+        """Return LLAP version."""
+        msg = 'APVER'
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
+
+    def batt(self, timeout=1, retry=3):
+        """Return battery voltage."""
+        msg = 'BATT'
+        resp = self.send(msg, response=msg, timeout=timeout, retry=retry)
+        if resp is not None:
+            return resp[len(msg):]
+        return None
+
+    def devtype(self, timeout=1, retry=3):
+        """Return LLAP device type."""
+        msg = 'DEVTYPE'
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
+
+    def devname(self, timeout=1, retry=3):
+        """Return LLAP device name."""
+        msg = 'DEVNAME'
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
+
+    def hello(self, timeout=1, retry=3):
+        """Send HELLO (ping) packet."""
+        msg = 'HELLO'
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
+
+    def ser(self, timeout=1, retry=3):
+        """Return device serial number."""
+        msg = 'SER'
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
+
+    def fver(self, timeout=1, retry=3):
+        """Return device firmware version."""
+        msg = 'FVER'
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
+
+    def reboot(self, timeout=1, retry=3):
+        """Reboot the device."""
+        msg = 'REBOOT'
+        ret = self.send(msg, response=msg, timeout=timeout, retry=retry)
+        self.started = False
+        return ret
+
+    def chdevid(self, new_address, reboot=True, timeout=1, retry=3):
+        """Change the device address."""
+        msg = 'CHDEVID%s' % new_address
+        ret = self.send(msg, response=msg, timeout=timeout, retry=retry)
+        if ret is None:
+            return False
+        if reboot:
+            ret = self.reboot()
+            self.address = new_address
+            return ret
+
+    def panid(self, new_panid, timeout=1, retry=3):
+        """Change the device PAN id."""
+        msg = 'PANID%s' % new_panid
+        return self.send(msg, response=msg, timeout=timeout, retry=retry)
