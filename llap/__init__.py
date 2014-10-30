@@ -85,8 +85,8 @@ class Transceiver(object):
         self.serial = serial.Serial(port, baudrate)
         self.receiver_thread = threading.Thread(target=self.reader)
         self.receiver_thread.daemon = True
-        self.receiver_thread.start()
-        time.sleep(0.05)
+        time.sleep(0.05)  # wait for the serial port to settle
+        self.start()
 
     def reader(self):
         """Reader thread."""
@@ -96,6 +96,7 @@ class Transceiver(object):
                 now = time.time()
                 delay = now - self.last_char
                 self.last_char = now
+                # longer delay means new packet
                 if delay > self.max_delay:
                     self.packet.clear()
                 self.packet.add(char)
@@ -104,6 +105,10 @@ class Transceiver(object):
                     self.packet.clear()
         except serial.SerialException:
             raise
+
+    def start(self):
+        """Start the receiver thread"""
+        self.receiver_thread.start()
 
     def send(self, addr, message):
         """Send a message to addr."""
