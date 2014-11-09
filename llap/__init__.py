@@ -117,13 +117,19 @@ class Transceiver(object):
     def send_packet(self, packet):
         """Send a packet."""
         if self.debug:
-            print '>> %s' % packet.data
+            t = time.time()
+            print "%s.%03d >> %s" % (time.strftime("%H:%M:%S"),
+                                     int(round(1000*(t - int(t)))),
+                                     packet.data)
         self.serial.write(packet.data)
 
     def receive(self, packet):
         """Packet receiver handler."""
         if self.debug:
-            print '<< %s' % packet.data
+            t = time.time()
+            print "%s.%03d << %s" % (time.strftime("%H:%M:%S"),
+                                     int(round(1000*(t - int(t)))),
+                                     packet.data)
         self.packet.unpad()
         addr = packet.address
         message = packet.message

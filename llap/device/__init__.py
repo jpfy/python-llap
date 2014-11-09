@@ -1,5 +1,7 @@
 """LLAP devices (inherit from llap.Device)."""
+
 import llap
+import time
 
 
 class Thermometer(llap.Device):
@@ -51,3 +53,19 @@ class GenericIO(llap.Device):
             except:
                 pass
         return None
+
+
+class TimeClient(llap.Device):
+
+    """LLAP time client."""
+
+    def __init__(self, addr, transceiver):
+        """Just call parent constructor."""
+        super(TimeClient, self).__init__(addr, transceiver)
+
+    def _handle_message(self, message):
+        """Message handler."""
+        super(TimeClient, self)._handle_message(message)
+        if message == 'NOW':
+            msg = 'NOW' + time.strftime("%H%M%S")
+            self.send(msg)
